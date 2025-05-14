@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import "./App.css";
 import "@aws-amplify/ui-react/styles.css";
 import { generateClient } from "aws-amplify/api";
+import { uploadData, getUrl, remove } from "@aws-amplify/storage";
 import {
   Button,
   Flex,
@@ -19,7 +20,6 @@ import {
   deleteNote as deleteNoteMutation,
 } from "./graphql/mutations";
 
-// クライアント生成（v6以降）
 const client = generateClient();
 
 const App = ({ signOut }) => {
@@ -29,48 +29,61 @@ const App = ({ signOut }) => {
     fetchNotes();
   }, []);
 
-async function fetchNotes() {
-  const apiData = await client.graphql({ query: listNotes });
-  const notesFromAPI = apiData.data.listNotes.items;
-  await Promise.all(
-    notesFromAPI.map(async (note) => {
-      if (note.image) {
-        const url = await Storage.get(note.name);
-        note.image = url;
-      }
-      return note;
-    })
-  );
-  setNotes(notesFromAPI);
-}
+  async function fetchNotes() {
+    const apiData = await client.graphql({ query: listNotes });
+    const notesFromAPI = apiData.data.listNotes.items;
 
-async function createNote(event) {
-  event.preventDefault();
-  const form = new FormData(event.target);
-  const image = form.get("image");
-  const data = {
-    name: form.get("name"),
-    description: form.get("description"),
-    image: image.name,
-  };
-  if (!!data.image) await Storage.put(data.name, image);
-  await client.graphql({
-    query: createNoteMutation,
-    variables: { input: data },
-  });
-  fetchNotes();
-  event.target.reset();
-}
+    await Promise.all(
+      notesFromAPI.map(async (note) => {
+        if (note.image) {
+          const { url } = await getUrl({ key: note.image });
+          note.image = url.href;
+        }
+        return note;
+      })
+    );
 
-async function deleteNote({ id, name }) {
-  const newNotes = notes.filter((note) => note.id !== id);
-  setNotes(newNotes);
-  await Storage.remove(name);
-  await client.graphql({
-    query: deleteNoteMutation,
-    variables: { input: { id } },
-  });
-}
+    setNotes(notesFromAPI);
+  }
+
+  async function createNote(event) {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const image = form.get("image");
+
+    const data = {
+      name: form.get("name"),
+      description: form.get("description"),
+    };
+
+    if (image && image.name) {
+      // S3にアップロード
+      await uploadData({ key: image.name, data: image });
+      data.image = image.name; // DBにはキーだけ保存
+    }
+
+    await client.graphql({
+      query: createNoteMutation,
+      variables: { input: data },
+    });
+
+    fetchNotes();
+    event.target.reset();
+  }
+
+  async function deleteNote({ id, image }) {
+    const newNotes = notes.filter((note) => note.id !== id);
+    setNotes(newNotes);
+
+    if (image) {
+      await remove({ key: image });
+    }
+
+    await client.graphql({
+      query: deleteNoteMutation,
+      variables: { input: { id } },
+    });
+  }
 
   return (
     <View className="App">
@@ -93,46 +106,47 @@ async function deleteNote({ id, name }) {
             variation="quiet"
             required
           />
+          <View
+            as="input"
+            name="image"
+            type="file"
+            style={{ alignSelf: "end" }}
+          />
           <Button type="submit" variation="primary">
             Create Note
           </Button>
+          <Button onClick={signOut}>Sign Out</Button>
         </Flex>
       </View>
       <Heading level={2}>Current Notes</Heading>
       <View margin="3rem 0">
-      {notes.map((note) => (
-        <Flex
-        key={note.id || note.name}
-        direction="row"
-        justifyContent="center"
-        alignItems="center"
-        >
-        <Text as="strong" fontWeight={700}>
-          {note.name}
-        </Text>
-        <Text as="span">{note.description}</Text>
-        {note.image && (
-        <Image
-        src={note.image}
-        alt={`visual aid for ${notes.name}`}
-        style={{ width: 400 }}
-      />
-    )}
-    <Button variation="link" onClick={() => deleteNote(note)}>
-      Delete note
-    </Button>
-  </Flex>
-))}
+        {notes.map((note) => (
+          <Flex
+            key={note.id}
+            direction="row"
+            justifyContent="center"
+            alignItems="center"
+          >
+            <Text as="strong" fontWeight={700}>
+              {note.name}
+            </Text>
+            <Text as="span">{note.description}</Text>
+            {note.image && (
+              <Image
+                src={note.image}
+                alt={`visual aid for ${note.name}`}
+                style={{ width: 400 }}
+              />
+            )}
+            <Button variation="link" onClick={() => deleteNote(note)}>
+              Delete note
+            </Button>
+          </Flex>
+        ))}
       </View>
-      <View
-      name="image"
-      as="input"
-      type="file"
-      style={{ alignSelf: "end" }}
-      />
-      <Button onClick={signOut}>Sign Out</Button>
     </View>
   );
 };
 
 export default withAuthenticator(App);
+

@@ -46,78 +46,113 @@ const App = ({ signOut }) => {
     setNotes(notesFromAPI);
   }
 
-  async function createNote(event) {
-    event.preventDefault();
-    const form = new FormData(event.target);
-    const image = form.get("image");
+async function createNote(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  const image = form.get("image");
 
-    const data = {
-      name: form.get("name"),
-      description: form.get("description"),
-    };
+  const data = {
+    name: form.get("name"),
+    description: form.get("description"),
+  };
 
-    if (image && image.name) {
-      // S3にアップロード
-      await uploadData({ key: image.name, data: image });
-      data.image = image.name; // DBにはキーだけ保存
+  if (image && image.name) {
+    const validTypes = ["image/jpeg", "image/png", "image/webp"];
+    const maxSize = 5 * 1024 * 1024;
+    if (!validTypes.includes(image.type) || image.size > maxSize) {
+      alert("無効な画像ファイルです。");
+      return;
     }
 
-    await client.graphql({
-      query: createNoteMutation,
-      variables: { input: data },
-    });
-
-    fetchNotes();
-    event.target.reset();
+    const key = `public/${Date.now()}_${image.name}`;
+    await uploadData({ key, data: image });
+    data.image = key;
   }
 
-  async function deleteNote({ id, image }) {
-    const newNotes = notes.filter((note) => note.id !== id);
-    setNotes(newNotes);
+  await client.graphql({
+    query: createNoteMutation,
+    variables: { input: data },
+  });
 
-    if (image) {
-      await remove({ key: image });
+  fetchNotes();
+  event.target.reset();
+}
+
+async function deleteNote({ id, image }) {
+  const newNotes = notes.filter((note) => note.id !== id);
+  setNotes(newNotes);
+
+  // 正しいキーを URL から復元
+  const s3Key = image?.includes("amazonaws.com/")
+    ? decodeURIComponent(image.split(".amazonaws.com/")[1].split("?")[0])
+    : null;
+
+  if (s3Key && s3Key.length < 1024) {
+    try {
+      await remove({ key: s3Key });
+    } catch (err) {
+      console.warn("S3からの削除失敗:", err);
     }
-
-    await client.graphql({
-      query: deleteNoteMutation,
-      variables: { input: { id } },
-    });
   }
+
+  await client.graphql({
+    query: deleteNoteMutation,
+    variables: { input: { id } },
+  });
+}
+
 
   return (
     <View className="App">
       <Heading level={1}>My Notes App</Heading>
-      <View as="form" margin="3rem 0" onSubmit={createNote}>
-        <Flex direction="row" justifyContent="center">
-          <TextField
-            name="name"
-            placeholder="Note Name"
-            label="Note Name"
-            labelHidden
-            variation="quiet"
-            required
-          />
-          <TextField
-            name="description"
-            placeholder="Note Description"
-            label="Note Description"
-            labelHidden
-            variation="quiet"
-            required
-          />
-          <View
-            as="input"
-            name="image"
-            type="file"
-            style={{ alignSelf: "end" }}
-          />
-          <Button type="submit" variation="primary">
-            Create Note
-          </Button>
-          <Button onClick={signOut}>Sign Out</Button>
-        </Flex>
-      </View>
+<View as="form" margin="3rem 0" onSubmit={createNote} style={{ position: "relative" }}>
+  {/* Sign Outボタンはフォーム内の絶対位置 */}
+  <Button
+    onClick={signOut}
+    variation="link"
+    style={{
+      position: "absolute",
+      top: 0,
+      right: 0,
+      padding: "0.5rem 1rem",
+      zIndex: 10,
+    }}
+  >
+    Sign Out
+  </Button>
+
+  <Flex direction="row" justifyContent="center" gap="1rem" alignItems="center">
+    <TextField
+      name="name"
+      placeholder="Note Name"
+      label="Note Name"
+      labelHidden
+      variation="quiet"
+      required
+    />
+    <TextField
+      name="description"
+      placeholder="Note Description"
+      label="Note Description"
+      labelHidden
+      variation="quiet"
+      required
+    />
+    <Button type="submit" variation="primary">
+      Create Note
+    </Button>
+  </Flex>
+
+  {/* 画像アップロードは中央に */}
+  <Flex
+    direction="row"
+    justifyContent="center"
+    alignItems="center"
+    marginTop="1rem"
+  >
+    <View as="input" name="image" type="file" />
+  </Flex>
+</View>
       <Heading level={2}>Current Notes</Heading>
       <View margin="3rem 0">
         {notes.map((note) => (
